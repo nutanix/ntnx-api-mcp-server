@@ -320,9 +320,10 @@ operations.
 
 ### Network exposure
 
-The server uses **stdio transport only** — it does not open any network listening port. The
-attack surface is therefore process-scoped, not network-scoped. There is no port to firewall
-or expose.
+For local client integrations, the server uses **stdio transport** and does not open any
+network listening port. The attack surface is therefore process-scoped, not network-scoped.
+For NAI and other containerized gateway deployments, use `nutanix-mcp serve-http` behind
+the platform's gateway authentication layer.
 
 However:
 
@@ -501,7 +502,7 @@ targeting the `LOG_DIR` directory.
 ### Network
 
 - [ ] Outbound firewall rules on the MCP server host allow HTTPS only to `PC_HOST:PC_PORT` and `NAMESPACE_SOURCE_URL` (default: `developers.nutanix.com`)
-- [ ] The MCP server is confirmed to open **no listening network port** (stdio transport only)
+- [ ] Local stdio deployments are confirmed to open **no listening network port**
 - [ ] The MCP server process is running as a dedicated non-root OS user
 - [ ] If running as a systemd service: `NoNewPrivileges=true`, `PrivateTmp=true`, and `User=` are set in the unit file
 

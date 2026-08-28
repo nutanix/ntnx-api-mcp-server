@@ -9,7 +9,7 @@
 
 ## What is this?
 
-**MCP (Model Context Protocol)** is an open standard that lets AI assistants call external tools safely and predictably. This server implements MCP over stdio transport, exposing Nutanix V4 APIs as callable tools. The V4 APIs are Nutanix's modern, versioned REST APIs for managing Prism Central — Nutanix's centralised management plane for multi-cluster infrastructure.
+**MCP (Model Context Protocol)** is an open standard that lets AI assistants call external tools safely and predictably. This server implements MCP over stdio for local clients and streamable HTTP for containerized platforms, exposing Nutanix V4 APIs as callable tools. The V4 APIs are Nutanix's modern, versioned REST APIs for managing Prism Central — Nutanix's centralised management plane for multi-cluster infrastructure.
 
 Once connected, an AI assistant like Claude or Cursor can discover available Nutanix operations, inspect their schemas and required permissions, and execute them against your Prism Central cluster, all from natural language.
 
@@ -60,12 +60,13 @@ The server exposes one `<namespace>_execute` tool per namespace. Namespaces are 
 
 - **Python 3.11 or higher**
 - **Git** (to clone the repository)
+- **Docker** (optional; required for Kubernetes/NAI deployments)
 - **Prism Central** access with one of:
   - Username + password (`PC_USERNAME` / `PC_PASSWORD`)
   - API key (`PC_API_KEY` via `X-ntnx-api-key` header)
 - Prism Central reporting a V4 API (check: `https://<PC_HOST>:9440/api/prism/unversioned/info` returns `"data": "v4.x"`)
 
-> No Docker required. The server runs as a local Python process over stdio.
+> Docker is optional for local stdio clients. Containerized platforms such as Nutanix Enterprise AI (NAI) require an HTTP listener, so this repository includes a Dockerfile and entrypoint that can be used to build an image running `nutanix-mcp serve-http` on port 8080.
 
 ---
 
@@ -141,11 +142,24 @@ Starts the MCP stdio server. AI clients (Cursor, Claude Desktop) invoke this aut
 nutanix-mcp serve-stdio
 ```
 
+### `nutanix-mcp serve-http`
+
+Starts the MCP streamable HTTP server for containerized runtimes and gateways such as NAI. The server listens on `0.0.0.0:${PORT:-8080}` by default and exposes:
+
+- `/mcp` — MCP streamable HTTP endpoint
+- `/health` — lightweight health endpoint
+
+```bash
+nutanix-mcp serve-http
+```
+
 ---
 
 ## Connecting to AI clients
 
-The server communicates over **stdio**. Any MCP-compatible client that supports subprocess-based stdio transport can connect by pointing its config at the `nutanix-mcp serve-stdio` command with credentials passed as environment variables.
+For local clients, the server communicates over **stdio**. Any MCP-compatible client that supports subprocess-based stdio transport can connect by pointing its config at the `nutanix-mcp serve-stdio` command with credentials passed as environment variables.
+
+For Kubernetes/NAI-style deployments, build a container image from the included Dockerfile. The default command runs `serve-http`, stores generated artifacts and logs under `/tmp`, and bootstraps API artifacts on startup when the artifact directory is empty.
 
 For step-by-step config for Cursor, Claude Desktop, MCP Inspector, and custom Python clients — including exact JSON blocks, absolute path requirements, and verification steps — see the [integration guide](docs/integration.md).
 

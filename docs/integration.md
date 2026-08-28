@@ -230,7 +230,7 @@ MCP clients that surface these hints (Cursor, Claude Desktop, custom clients) wi
 
 ## Custom API clients
 
-The server communicates exclusively over **stdio** (standard input / standard output). There is no HTTP port, no SSE endpoint, and no REST API surface exposed by the server process itself. All MCP communication happens through JSON-RPC messages on stdin/stdout per the [MCP specification](https://spec.modelcontextprotocol.io).
+For local client integrations, the server communicates over **stdio** (standard input / standard output). Containerized gateway deployments can use `nutanix-mcp serve-http`, which exposes MCP streamable HTTP for platforms such as NAI.
 
 To call the server programmatically, launch it as a subprocess and communicate using the MCP stdio transport. The example below uses the Python `mcp` SDK:
 

@@ -12,6 +12,7 @@ from typing import Any
 
 from .auth import StartupValidationError, validate_startup_readiness
 from .config import load_settings
+from .mcp_http_server import serve_http
 from .mcp_stdio_server import serve_stdio
 from .server import build_runtime_dispatcher
 
@@ -77,6 +78,10 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "serve-stdio",
         help="Run MCP stdio server for Cursor/Claude/Inspector clients",
+    )
+    subparsers.add_parser(
+        "serve-http",
+        help="Run MCP streamable HTTP server for Kubernetes/NAI clients",
     )
     return parser
 
@@ -238,6 +243,10 @@ def main() -> None:
 
     if command == "serve-stdio":
         serve_stdio(settings)
+        return
+
+    if command == "serve-http":
+        serve_http(settings)
         return
 
     if bool(getattr(args, "validate_only", False)):
