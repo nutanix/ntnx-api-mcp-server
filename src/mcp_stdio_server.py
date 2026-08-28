@@ -9,7 +9,6 @@ from typing import Any
 from mcp import types
 from mcp.server import NotificationOptions
 from mcp.server.lowlevel import Server
-from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 
 import importlib.metadata
@@ -132,7 +131,8 @@ def _build_instructions(namespaces: list[str]) -> str:
     )
 
 
-async def _serve_stdio(settings: Settings) -> None:
+def build_mcp_server(settings: Settings) -> Server:
+    """Build the MCP server and register Nutanix runtime tools."""
     try:
         _version = importlib.metadata.version("ntnx-api-mcp-server")
     except importlib.metadata.PackageNotFoundError:
@@ -168,17 +168,19 @@ async def _serve_stdio(settings: Settings) -> None:
             structuredContent=result.as_dict(),
         )
 
+    return server
+
+
+async def _serve_stdio(settings: Settings) -> None:
+    server = build_mcp_server(settings)
+
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
             write_stream,
-            InitializationOptions(
-                server_name="nutanix-v4-mcp-server",
-                server_version=_version,
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
-                ),
+            server.create_initialization_options(
+                notification_options=NotificationOptions(),
+                experimental_capabilities={},
             ),
         )
 

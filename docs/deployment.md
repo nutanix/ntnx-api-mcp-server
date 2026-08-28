@@ -28,7 +28,7 @@
 | Docker | Medium | Isolated, reproducible environments; CI pipelines; teams that standardise on containers | [§3 Docker](#3-docker) |
 | Bare metal / VM | Medium | Persistent service on a server or VM close to Prism Central; long-running deployments | [§4 Bare metal / VM](#4-bare-metal--vm) |
 
-> The server communicates over **stdio only**. It does not open a TCP port. Every deployment method boils down to the same thing: an MCP client (Cursor, Claude Desktop, etc.) launches the `nutanix-mcp serve-stdio` process and pipes messages through its stdin/stdout.
+> Local MCP clients use **stdio** by launching `nutanix-mcp serve-stdio` as a subprocess. Containerized platforms and gateways such as Nutanix Enterprise AI (NAI) need a network listener instead, so the container entrypoint runs the streamable HTTP transport on port 8080 by default.
 
 ---
 
@@ -122,40 +122,27 @@ The process blocks, reading MCP messages from stdin. Connect your MCP client to 
 
 ## 3. Docker
 
-> **No official Docker image is published yet.** The steps below describe how to build and run a local image from the repository source.
+Use Docker when the MCP server needs to run in an isolated runtime, CI pipeline, Kubernetes cluster, or NAI local-server deployment. NAI deploys local servers as containers and performs readiness checks against a TCP port, so stdio-only execution is not sufficient there.
 
 ### 3.1 Requirements
 
 - Docker Engine 20.10 or later
 - Repository cloned locally
 
-### 3.2 Create a Dockerfile
+### 3.2 Container behavior
 
-No `Dockerfile` is committed to the repository. Create one in the project root:
+The committed `Dockerfile` builds a Python 3.11 image, installs the package, runs as a non-root user, and defaults to:
 
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# Copy project files
-COPY pyproject.toml .
-COPY src/ src/
-
-# Install the package
-RUN pip install --no-cache-dir -e .
-
-# Artifacts and logs directories
-RUN mkdir -p /app/artifacts /app/logs
-
-# Run as non-root
-RUN useradd --system --no-create-home --shell /usr/sbin/nologin nutanix-mcp
-RUN chown -R nutanix-mcp:nutanix-mcp /app
-USER nutanix-mcp
-
-ENTRYPOINT ["nutanix-mcp"]
-CMD ["serve-stdio"]
+```bash
+nutanix-mcp serve-http
 ```
+
+The HTTP server listens on `0.0.0.0:${PORT:-8080}` and exposes:
+
+- `/mcp` for MCP streamable HTTP
+- `/health` for readiness and liveness checks
+
+The container uses `/tmp/nutanix-mcp-artifacts` and `/tmp/nutanix-mcp-logs` by default so it can run on platforms with a read-only root filesystem, including NAI.
 
 ### 3.3 Build the image
 
@@ -165,29 +152,28 @@ docker build -t nutanix-mcp:latest .
 
 ### 3.4 Run the container
 
-Because the server uses stdio transport, the container must be launched by your MCP client as a subprocess, not as a standalone daemon. Pass credentials via environment variables; never bake them into the image.
+For HTTP/gateway deployments, run the container as a service. Pass credentials via environment variables; never bake them into the image.
 
-Example run command for manual testing (stdin/stdout attached):
+Example run command for manual testing:
 
 ```bash
-docker run --rm -i \
+docker run --rm \
+  -p 8080:8080 \
   -e PC_HOST=your-pc.example.com \
   -e PC_PORT=9440 \
   -e PC_USERNAME=your-username \
   -e PC_PASSWORD=your-password \
   -e PC_INSECURE=false \
-  -e ARTIFACTS_DIR=/app/artifacts \
-  -e LOG_DIR=/app/logs \
-  -v /host/path/artifacts:/app/artifacts \
-  nutanix-mcp:latest serve-stdio
+  nutanix-mcp:latest
 ```
 
-> `-i` keeps stdin open, which is required for stdio transport.
-> Mount a host volume for `artifacts/` so downloaded specs persist across container restarts.
+The entrypoint downloads API artifacts on startup when the artifact directory is empty. For faster restarts, mount a writable volume at `/tmp/nutanix-mcp-artifacts`.
 
 ### 3.5 MCP client configuration with Docker
 
-Point your MCP client at `docker run` instead of `nutanix-mcp` directly. Example for Cursor (`~/.cursor/mcp.json`):
+For local stdio clients, you can still point your MCP client at `docker run` instead of `nutanix-mcp` directly. In that mode, override the container command to `serve-stdio`.
+
+Example for Cursor (`~/.cursor/mcp.json`):
 
 ```json
 {
@@ -201,8 +187,8 @@ Point your MCP client at `docker run` instead of `nutanix-mcp` directly. Example
         "-e", "PC_USERNAME=your-username",
         "-e", "PC_PASSWORD=your-password",
         "-e", "PC_INSECURE=false",
-        "-e", "ARTIFACTS_DIR=/app/artifacts",
-        "-v", "/host/path/artifacts:/app/artifacts",
+        "-e", "ARTIFACTS_DIR=/tmp/nutanix-mcp-artifacts",
+        "-v", "/host/path/artifacts:/tmp/nutanix-mcp-artifacts",
         "nutanix-mcp:latest",
         "serve-stdio"
       ]
@@ -221,12 +207,32 @@ docker run --rm \
   -e PC_USERNAME=your-username \
   -e PC_PASSWORD=your-password \
   -e PC_INSECURE=false \
-  -e ARTIFACTS_DIR=/app/artifacts \
-  -v /host/path/artifacts:/app/artifacts \
+  -e ARTIFACTS_DIR=/tmp/nutanix-mcp-artifacts \
+  -v /host/path/artifacts:/tmp/nutanix-mcp-artifacts \
   nutanix-mcp:latest run --validate-only
 ```
 
 A `"startup_ready": true` field in the JSON output confirms everything is working.
+
+### 3.7 Nutanix Enterprise AI
+
+NAI local servers are deployed as Kubernetes containers behind the NAI gateway. Build an image from the included Dockerfile and configure NAI to run it with no extra command arguments; the default command starts `serve-http`.
+
+Minimum NAI settings:
+
+```dotenv
+PC_HOST=your-pc.example.com
+PC_PORT=9440
+PC_API_KEY=your-prism-central-api-key
+PC_INSECURE=false
+READ_ONLY_MODE=true
+ARTIFACTS_DIR=/tmp/nutanix-mcp-artifacts
+LOG_DIR=/tmp/nutanix-mcp-logs
+LOG_LEVEL=INFO
+LOG_FORMAT=text
+```
+
+Set the exposed port to `8080`. NAI protects the public MCP route with its MCP Connector Key; Prism Central credentials remain server-side in the container environment.
 
 ---
 
@@ -394,7 +400,9 @@ For JSON-formatted logs suitable for forwarding to a log aggregator, set `LOG_FO
 
 ### 5.1 Port the server listens on
 
-**None.** The server uses **stdio transport only** and does not bind to any TCP port. There is no HTTP endpoint, no socket, and nothing to expose through a firewall.
+For local stdio deployments, **none**. `nutanix-mcp serve-stdio` does not bind to any TCP port.
+
+For HTTP/gateway deployments, `nutanix-mcp serve-http` listens on `0.0.0.0:${PORT:-8080}`. Put this endpoint behind a trusted gateway such as NAI rather than exposing it directly.
 
 ### 5.2 Outbound connectivity required
 
@@ -407,7 +415,7 @@ The server makes outbound HTTPS connections to Prism Central:
 
 ### 5.3 Firewall rules
 
-Because there is no inbound port to open, firewall rules only govern outbound traffic from the host where the server runs:
+For local stdio deployments, there is no inbound port to open, so firewall rules only govern outbound traffic from the host where the server runs:
 
 ```bash
 # Allow outbound HTTPS to Prism Central (adjust the IP and port as needed)
@@ -504,9 +512,11 @@ sudo chmod -R 750 /opt/nutanix-mcp/.venv
 
 ## 8. Health checks
 
-### 8.1 No HTTP health endpoint
+### 8.1 HTTP health endpoint
 
-The server exposes **no HTTP endpoint** — it communicates via stdio only. There is no `/health`, `/ready`, or `/ping` route to poll.
+`nutanix-mcp serve-http` exposes `/health` for container and gateway health checks.
+
+`nutanix-mcp serve-stdio` does not expose a health endpoint; use process-level checks for local stdio deployments.
 
 ### 8.2 Process-level monitoring
 
