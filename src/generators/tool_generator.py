@@ -110,13 +110,18 @@ class ToolGenerator:
         operations: list[OperationInfo],
         schemas: dict[str, Any] | None = None,
         namespace_metadata: dict[str, NamespaceMetadata] | None = None,
+        namespace_schemas: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.operations = operations
         self._schemas = schemas or {}
         self._namespace_metadata = namespace_metadata or {}
         self._resolver = SchemaResolver(self._schemas)
+        self._namespace_resolvers = {
+            namespace: SchemaResolver(definitions)
+            for namespace, definitions in (namespace_schemas or {}).items()
+        }
         # Lazy cache: populated on first getOperationSchema call per operation.
-        self._schema_cache: dict[str, dict[str, Any]] = {}
+        self._schema_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
     def group_by_namespace(self) -> dict[str, list[OperationInfo]]:
         """Group parsed operations by namespace."""
@@ -207,14 +212,21 @@ class ToolGenerator:
         return desc
 
     def build_operation_index(self) -> dict[str, dict[str, Any]]:
-        """Build raw lookup index keyed by registered_name (used for logging/counts)."""
+        """Build raw lookup index keyed by namespace:name (used for logging/counts)."""
         index: dict[str, dict[str, Any]] = {}
         for operation in self.operations:
-            index[operation.registered_name] = asdict(operation)
+            index[f"{operation.namespace}:{operation.registered_name}"] = asdict(operation)
         return index
 
     def build_discovery_tools(self) -> list[dict[str, Any]]:
         """Build progressive disclosure helper tool schemas."""
+        namespace_property = {
+            "type": "string",
+            "description": (
+                "Namespace from listOperations. Required when the operation name "
+                "exists in more than one namespace."
+            ),
+        }
         definitions = [
             ToolDefinition(
                 name="listOperations",
@@ -245,7 +257,10 @@ class ToolGenerator:
                     "and required_body_fields. Always call this before executing a write operation."
                 ),
                 inputSchema=ToolInputSchema(
-                    properties={"operation": {"type": "string"}},
+                    properties={
+                        "operation": {"type": "string"},
+                        "namespace": namespace_property,
+                    },
                     required=["operation"],
                 ),
             ),
@@ -256,6 +271,7 @@ class ToolGenerator:
                     properties={
                         "operation": {"type": "string"},
                         "language": {"type": "string"},
+                        "namespace": namespace_property,
                     },
                     required=["operation", "language"],
                 ),
@@ -264,7 +280,10 @@ class ToolGenerator:
                 name="getOperationPermissions",
                 description="Get required roles/permissions metadata for a specific operation id.",
                 inputSchema=ToolInputSchema(
-                    properties={"operation": {"type": "string"}},
+                    properties={
+                        "operation": {"type": "string"},
+                        "namespace": namespace_property,
+                    },
                     required=["operation"],
                 ),
             ),
@@ -330,18 +349,23 @@ class ToolGenerator:
         page = scored[offset: offset + limit]
         return [item.model_dump() for _, _, item in page]
 
-    def get_operation_schema(self, operation_id: str) -> dict[str, Any]:
+    def get_operation_schema(
+        self, operation_id: str, namespace: str | None = None,
+    ) -> dict[str, Any]:
         """Return structured schema for an operation, resolved lazily and cached."""
-        if operation_id in self._schema_cache:
-            return self._schema_cache[operation_id]
-        op = self._find_operation(operation_id)
+        op = self._find_operation(operation_id, namespace)
+        cache_key = (op.namespace, op.registered_name)
+        if cache_key in self._schema_cache:
+            return self._schema_cache[cache_key]
         result = self._build_structured_schema(op)
-        self._schema_cache[operation_id] = result
+        self._schema_cache[cache_key] = result
         return result
 
-    def get_code_sample(self, operation_id: str, language: str) -> dict[str, Any] | None:
+    def get_code_sample(
+        self, operation_id: str, language: str, namespace: str | None = None,
+    ) -> dict[str, Any] | None:
         """Return the best matching code sample for operation/language."""
-        op = self._find_operation(operation_id)
+        op = self._find_operation(operation_id, namespace)
         requested = language.lower().strip()
         for sample in op.code_samples:
             sample_language = sample.get("lang") or sample.get("language")
@@ -349,9 +373,11 @@ class ToolGenerator:
                 return sample
         return None
 
-    def get_operation_permissions(self, operation_id: str) -> dict[str, Any]:
+    def get_operation_permissions(
+        self, operation_id: str, namespace: str | None = None,
+    ) -> dict[str, Any]:
         """Return permission metadata and required roles for an operation id."""
-        op = self._find_operation(operation_id)
+        op = self._find_operation(operation_id, namespace)
         permissions = op.permissions
         permission_name = (
             permissions.get("operationName")
@@ -368,12 +394,33 @@ class ToolGenerator:
             "raw_permissions": permissions,
         }
 
-    def _find_operation(self, operation_id: str) -> OperationInfo:
-        """Look up an OperationInfo by registered_name, raising KeyError if absent."""
-        for op in self.operations:
-            if op.registered_name == operation_id:
-                return op
-        raise KeyError(f"Unknown operation id: {operation_id!r}")
+    def _find_operation(
+        self, operation_id: str, namespace: str | None = None,
+    ) -> OperationInfo:
+        """Resolve a registered name without silently choosing another namespace."""
+        if namespace is not None:
+            if not isinstance(namespace, str) or not namespace.strip():
+                raise ToolContractError(
+                    code="invalid_arguments", detail="'namespace' must be a non-empty string.",
+                )
+            namespace = namespace.strip()
+        matches = [
+            op for op in self.operations
+            if op.registered_name == operation_id
+            and (namespace is None or op.namespace == namespace)
+        ]
+        if not matches:
+            raise KeyError(f"Unknown operation id: {operation_id!r}")
+        if len(matches) > 1:
+            namespaces = ", ".join(sorted({op.namespace for op in matches}))
+            raise ToolContractError(
+                code="ambiguous_operation",
+                detail=(
+                    f"Operation '{operation_id}' exists in multiple namespaces: "
+                    f"{namespaces}. Specify 'namespace'."
+                ),
+            )
+        return matches[0]
 
     def _build_structured_schema(self, op: OperationInfo) -> dict[str, Any]:
         """Build the deterministic structured response for getOperationSchema."""
@@ -410,7 +457,8 @@ class ToolGenerator:
                 .get("schema", {})
             )
             if schema_node:
-                resolved = self._resolver.resolve(schema_node)
+                resolver = self._namespace_resolvers.get(op.namespace, self._resolver)
+                resolved = resolver.resolve(schema_node)
                 rtype = resolved.get("type")
                 if rtype == "object":
                     body_schema = resolved.get("properties") or {}
@@ -426,6 +474,7 @@ class ToolGenerator:
 
         result: dict[str, Any] = {
             "operation": op.registered_name,
+            "namespace": op.namespace,
             "method": op.method,
             "path": op.path,
             "path_parameters": path_params,

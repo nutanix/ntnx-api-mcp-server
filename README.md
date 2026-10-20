@@ -166,6 +166,13 @@ These 4 tools are always registered regardless of which namespace artifacts are 
 | `getCodeSample` | Get a language-specific code sample for an `operation`, by `language` (e.g. `python`, `curl`). |
 | `getOperationPermissions` | Get required roles and permissions metadata for a specific `operation` id. |
 
+`getOperationSchema`, `getCodeSample`, and `getOperationPermissions` accept an
+optional `namespace`, using the value returned by `listOperations`. If an operation
+name appears in multiple namespaces, pass both fields, for example
+`{"operation": "getDiskById", "namespace": "vmm"}`. Omitting `namespace` for an
+ambiguous name returns `ambiguous_operation` and the matching namespaces. Unique
+operation names continue to work without it.
+
 ### Namespace execution tools
 
 Each namespace has a corresponding `<namespace>_execute` tool registered at startup from the downloaded YAML artifacts. Two parameters apply to every call:

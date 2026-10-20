@@ -76,7 +76,7 @@ def load_operations_from_yamls(settings: Settings) -> StartupLoadResult:
     source_label, source_dir = select_artifact_source(settings)
     files = list_yaml_artifacts(source_dir)
     operations: list[OperationInfo] = []
-    combined_schemas: dict[str, Any] = {}
+    namespace_schemas: dict[str, dict[str, Any]] = {}
     namespace_metadata: dict[str, NamespaceMetadata] = {}
 
     for file_path in files:
@@ -84,14 +84,13 @@ def load_operations_from_yamls(settings: Settings) -> StartupLoadResult:
         parser.load()
         namespace = infer_namespace(file_path)
         operations.extend(parser.extract_operations(namespace=namespace))
-        # Later specs override earlier ones for the same schema name (last-writer-wins).
-        combined_schemas.update(parser.schemas)
+        namespace_schemas.setdefault(namespace, {}).update(parser.schemas)
         if namespace not in namespace_metadata:
             namespace_metadata[namespace] = parser.get_namespace_metadata(namespace)
 
     generator = ToolGenerator(
         operations,
-        schemas=combined_schemas,
+        namespace_schemas=namespace_schemas,
         namespace_metadata=namespace_metadata,
     )
     namespace_tools = generator.build_namespace_tools()

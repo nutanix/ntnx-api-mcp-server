@@ -114,7 +114,9 @@ class RuntimeToolDispatcher:
                 error={"code": "invalid_arguments", "detail": "'operation' is required."},
             )
         try:
-            schema = self.generator.get_operation_schema(operation)
+            schema = self.generator.get_operation_schema(operation, namespace=args.get("namespace"))
+        except ToolContractError as exc:
+            return ToolDispatchResult(ok=False, tool="getOperationSchema", error=exc.as_dict())
         except KeyError:
             return ToolDispatchResult(
                 ok=False,
@@ -133,7 +135,9 @@ class RuntimeToolDispatcher:
                 error={"code": "invalid_arguments", "detail": "'operation' and 'language' are required."},
             )
         try:
-            sample = self.generator.get_code_sample(operation, language)
+            sample = self.generator.get_code_sample(operation, language, namespace=args.get("namespace"))
+        except ToolContractError as exc:
+            return ToolDispatchResult(ok=False, tool="getCodeSample", error=exc.as_dict())
         except KeyError:
             return ToolDispatchResult(
                 ok=False,
@@ -160,7 +164,9 @@ class RuntimeToolDispatcher:
                 error={"code": "invalid_arguments", "detail": "'operation' is required."},
             )
         try:
-            permissions = self.generator.get_operation_permissions(operation)
+            permissions = self.generator.get_operation_permissions(operation, namespace=args.get("namespace"))
+        except ToolContractError as exc:
+            return ToolDispatchResult(ok=False, tool="getOperationPermissions", error=exc.as_dict())
         except KeyError:
             return ToolDispatchResult(
                 ok=False,
